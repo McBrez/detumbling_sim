@@ -1,4 +1,5 @@
 import numpy as np
+from numpy import sin, cos
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from scipy.spatial.transform import Rotation as R
@@ -20,15 +21,15 @@ def kinematics(omega, magnetic_dipole, magnetic_field, inertia, inertiaInvert, b
 
     torque_magnetic = np.cross(np.array([0.0, 0.0, 1.0]) * magnetic_dipole, magnetic_field)
     torque_hysteresis_x = np.cross(np.array([1.0, 0.0, 0.0]) * m_hyst_x, magnetic_field)
-    torque_hysteresis_y = np.cross(np.array([0.0, 1.0, 1.0]) * m_hyst_y, magnetic_field)
+    torque_hysteresis_y = np.cross(np.array([0.0, 1.0, 0.0]) * m_hyst_y, magnetic_field)
     # derivation_term = np.cross(omega, np.matmul(inertia, omega))
 
     # return np.matmul(inertiaInvert, torque_hysteresis_x + torque_hysteresis_y + torque_magnetic - derivation_term)
     return np.matmul(inertiaInvert, torque_hysteresis_x + torque_hysteresis_y + torque_magnetic)
 
 
-def hysteresis_loop_x(p, Bs, H, Hc, h):
-    dH = (np.linalg.norm(H) - np.linalg.norm(hysteresis_loop_x.H_prev)) / h
+def hysteresis_loop_x(p, Bs, H, Hc):
+    dH = H - hysteresis_loop_x.H_prev
 
     if dH > 0.0:
         Hc_actual = -1.0 * Hc
@@ -36,19 +37,14 @@ def hysteresis_loop_x(p, Bs, H, Hc, h):
         Hc_actual = Hc
     hysteresis_loop_x.H_prev = H
 
-    H_norm = np.linalg.norm(H)
-
-    if H_norm == 0.0:
-        return 0.0
-    else:
-        return (2.0 / np.pi * Bs * np.arctan(p * H_norm + Hc_actual))
+    return (2.0 / np.pi * Bs * np.arctan(p * H + Hc_actual))
 
 
 hysteresis_loop_x.H_prev = 1.0
 
 
-def hysteresis_loop_y(p, Bs, H, Hc, h):
-    dH = (np.linalg.norm(H) - np.linalg.norm(hysteresis_loop_y.H_prev)) / h
+def hysteresis_loop_y(p, Bs, H, Hc):
+    dH = H - hysteresis_loop_y.H_prev
 
     if dH > 0.0:
         Hc_actual = -1.0 * Hc
@@ -56,15 +52,27 @@ def hysteresis_loop_y(p, Bs, H, Hc, h):
         Hc_actual = Hc
     hysteresis_loop_y.H_prev = H
 
-    H_norm = np.linalg.norm(H)
-
-    if H_norm == 0.0:
-        return 0.0
-    else:
-        return (2.0 / np.pi * Bs * np.arctan(p * H_norm + Hc_actual))
+    return (2.0 / np.pi * Bs * np.arctan(p * H + Hc_actual))
 
 
 hysteresis_loop_y.H_prev = 1.0
+
+
+def build_rotation_matrix(theta):
+    return np.array(
+        [[cos(theta[1]) * cos(theta[0]), cos(theta[1]) * sin(theta[0]), - 1.0 * sin(theta[1])],
+         [sin(theta[2]) * sin(theta[1]) * cos(theta[0]) - cos(theta[2]) * sin(theta[0]),
+          sin(theta[2]) * sin(theta[1]) * sin(theta[0]) + cos(theta[2]) * cos(theta[0]), sin(theta[2]) * cos(theta[1])],
+         [cos(theta[2]) * sin(theta[1]) * cos(theta[0]) + sin(theta[2]) * sin(theta[0]),
+          cos(theta[2]) * sin(theta[1]) * sin(theta[0]) - sin(theta[2]) * cos(theta[0]),
+          cos(theta[2]) * cos(theta[1])]])
+
+
+def build_rotation_matrix_derivative(theta):
+    return np.array(
+        [[0.0, sin(theta[2]), cos(theta[2])],
+         [0.0, cos(theta[2]) * cos(theta[1]), -1.0 * sin(theta[2]) * cos(theta[1])],
+         [cos(theta[1]), sin(theta[2]) * sin(theta[1]), cos(theta[2]) * sin(theta[1])]]) * 1.0 / cos(theta[1])
 
 
 def hysteresis_rod_moment(B_hyst, V, mu_0):
@@ -158,32 +166,32 @@ if __name__ == '__main__':
         cache_idx = 0
         for i in tqdm(range(iterations)):
             # Rotate the body centric system.
-            rotation = R.from_euler('zyx', theta_current, )
-            inverse_rotation = R.from_euler('zyx', -theta_current)
-            rotation_matrix = rotation.as_matrix()
-            inverse_rotation_matrix = inverse_rotation.as_matrix()
-            base = np.matmul(rotation_matrix, initial_base.transpose()).transpose()
+
+            rotation_matrix = build_rotation_matrix(theta_current)
+            inverse_rotation_matrix = rotation_matrix.transpose()
+            base = np.matmul(inverse_rotation_matrix, initial_base.transpose()).transpose()
 
             # Calculate the dipole moment of the hysteresis rods ...
             # ... Calculate the field in the direction of the rods ...
             H_x = np.dot(base[0], earth_magnetic_field / mu_0)
             H_y = np.dot(base[1], earth_magnetic_field / mu_0)
             # ... Calculate the flux induced in the hysteresis rods ...
-            B_hyst_x = hysteresis_loop_x(p, Bs, H_x, Hc, h)
-            B_hyst_y = hysteresis_loop_y(p, Bs, H_y, Hc, h)
+            B_hyst_x = hysteresis_loop_x(p, Bs, H_x, Hc)
+            B_hyst_y = hysteresis_loop_y(p, Bs, H_y, Hc)
             # ... Get the dipole moment from the hysteresis flux.
             m_hyst_x = hysteresis_rod_moment(B_hyst_x, V_hyst, mu_0)
             m_hyst_y = hysteresis_rod_moment(B_hyst_y, V_hyst, mu_0)
 
             # Calculate the next omega.
             omega_next = omega_current + h * kinematics(omega_current, magnetic_dipole,
-                                                        np.matmul(inverse_rotation_matrix, earth_magnetic_field),
+                                                        np.matmul(rotation_matrix, earth_magnetic_field),
                                                         inertiaMatrix, inertiaMatrixInvert, base, m_hyst_x,
                                                         m_hyst_y)
             omega_cache[cache_counter] = omega_next
 
-            # Calculate the next phi.
-            theta_next = theta_current + omega_current * h
+            # Calculate the next theta.
+            theta_next = (theta_current + np.matmul(build_rotation_matrix_derivative(theta_current),
+                                                    omega_current) * h) % (2.0 * np.pi)
             theta_cache[cache_counter] = theta_next
 
             # Calculate the timestamp.
